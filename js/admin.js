@@ -694,6 +694,7 @@
         '<label class="switch"><input type="checkbox" id="c-ev"' + (c.syaratEvaluasi === 'ya' ? ' checked' : '') + '> <span class="sm">Wajib sudah mengisi evaluasi</span></label></div></div></div>' +
         '<div class="card" style="grid-column:1/-1"><h2>Gambar</h2><div class="grid2 two mt2" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">' +
         up('logo', 'Logo penyelenggara', 'PNG transparan disarankan.', pr.logo) + up('ttd', 'Tanda tangan', 'PNG transparan, latar putih/transparan.', pr.ttd) + up('template', 'Gambar latar / template sertifikat', 'Ukuran A4 mendatar (landscape). Kosongkan untuk desain standar.', pr.template) + '</div></div>' +
+        '<div class="card" style="grid-column:1/-1"><h2>' + ico('mail') + ' Pengiriman Email Tiket</h2><p class="sm mt1" style="color:var(--muted,#64748B)">Kirim email uji ke alamat Anda untuk memastikan QR tiket peserta dapat terkirim otomatis. Bila gagal, pesan error asli akan ditampilkan. Tombol ini juga memasang ulang pemicu antrean yang hilang dan mengulang pengiriman yang tertunda.</p><div class="mt2"><button class="btn ghost" type="button" id="btn-tes">' + ico('send') + 'Kirim Email Uji</button></div><div id="tes-hasil" class="alert hidden mt2 sm" role="status"></div></div>' +
         '<div style="grid-column:1/-1"><div id="c-err" class="alert bad hidden mb2" role="alert"></div><button class="btn lg" type="submit" id="btn-set">' + ico('save') + 'Simpan Pengaturan</button></div></form>';
       return {
         html: html, bind: function (cn) {
@@ -702,6 +703,18 @@
               var f = inp.files[0]; if (!f) return; var j = inp.dataset.up;
               W.toast('Mengunggah…');
               unggahKe(j, f).then(function (r) { var im = $('#pv-' + j); im.src = r.pratinjau; im.style.visibility = 'visible'; W.toast('Gambar tersimpan', 'ok'); W.logoUrl = j === 'logo' ? r.url : W.logoUrl; }).catch(function (e) { W.toast(e.message, 'bad'); });
+            });
+          });
+          $('#btn-tes').addEventListener('click', function () {
+            var h = $('#tes-hasil'); h.classList.add('hidden'); h.classList.remove('bad', 'ok');
+            W.sibuk($('#btn-tes'), function () {
+              return rpc('apiTesEmail', [W.sesi]).then(function (r) {
+                h.className = 'alert ok mt2 sm';
+                h.innerHTML = ico('check_circle') + '<span>Email uji terkirim ke <b>' + esc(r.email) + '</b>. Sisa kuota hari ini: ' + r.sisaKuota + '.' + (r.pemicuDipasangUlang ? ' Pemicu antrean email dipasang ulang.' : '') + (r.antre ? ' ' + r.antre + ' email tertunda akan dikirim dalam 5 menit.' : '') + ' Cek kotak masuk (dan Spam).</span>';
+              }).catch(function (x) {
+                h.className = 'alert bad mt2 sm';
+                h.innerHTML = ico('error') + '<span>' + esc(x.message) + '</span>';
+              });
             });
           });
           $('#f-set').addEventListener('submit', function (e) {

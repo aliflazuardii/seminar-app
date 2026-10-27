@@ -35,7 +35,19 @@ W.badgeStatus = function (st) {
 
 /* ---------- panggilan server (fetch ke GAS REST API) ---------- */
 /** POST text/plain agar tidak memicu preflight CORS yang ditolak GAS. Body: {fn, args}. */
+var BACA = { apiInfoPublik: 1, apiTiketSaya: 1, apiDashboard: 1, apiDaftarSeminar: 1, apiDaftarPeserta: 1, apiDaftarPengguna: 1, apiRiwayat: 1, apiEvaluasi: 1, apiLogScan: 1, apiStatusSertifikat: 1, apiAuditLog: 1, apiPengaturan: 1, apiCariPeserta: 1, apiPulihSesi: 1, apiVerifikasiSertifikat: 1 };
+var terbang = {};      // permintaan baca yang sedang berjalan (dipakai bersama agar tidak dobel)
+W.epoch = 0;           // naik setiap ada perubahan data → cache halaman dibuang
+W.cacheH = {};         // cache halaman: kunci → {html, bind, t}
 W.rpc = function (fn, args, opsi) {
+  var kunci = BACA[fn] ? fn + JSON.stringify(args || []) : null;
+  if (kunci && terbang[kunci]) return terbang[kunci];
+  var p = rpcMentah(fn, args, opsi);
+  if (kunci) { terbang[kunci] = p; var lepas = function () { delete terbang[kunci]; }; p.then(lepas, lepas); }
+  else { var ubah = function () { W.epoch++; W.cacheH = {}; W.infoLanding = null; }; p.then(ubah, ubah); }
+  return p;
+};
+function rpcMentah(fn, args, opsi) {
   opsi = opsi || {};
   return new Promise(function (resolve, reject) {
     var coba = 0;
@@ -63,7 +75,7 @@ W.rpc = function (fn, args, opsi) {
     }
     jalan();
   });
-};
+}
 
 /* ---------- toast & modal ---------- */
 W.toast = function (pesan, tipe) {
@@ -229,10 +241,11 @@ W.Tbl = {
 };
 
 /* ---------- navigasi SPA ---------- */
-W.injectPage = function (html, bind) {
+W.injectPage = function (html, bind, tetapScroll) {
   var c = W.$('#app-container');
+  clearInterval(W.timer); W.timer = null;   // bind() halaman boleh dipanggil ulang tanpa menumpuk timer
   c.innerHTML = html;
-  try { window.scrollTo(0, 0); } catch (e) {}
+  if (!tetapScroll) { try { window.scrollTo(0, 0); } catch (e) {} }
   if (bind) bind(c);
 };
 
@@ -242,30 +255,84 @@ W.skeleton = function () {
 
 W.stopPemindai = function () { if (W.hentikanKamera) W.hentikanKamera(); };
 
+/** Halaman baca-saja yang boleh tampil seketika dari cache lalu diperbarui diam-diam di latar belakang. */
+var SWR_RUTE = { landing: 1, dashboard: 1, seminar: 1, peserta: 1, riwayat: 1, evaluasiHasil: 1, laporan: 1, sertifikat: 1, pengguna: 1 };
+function kunciHalaman(nama, params) { return nama + '|' + (W.semId || '') + '|' + JSON.stringify(params || {}); }
+function galatHalaman(nama, staf, e) {
+  var html = '<div class="' + (staf ? '' : 'pub') + '"><div class="card center mt3">' + W.ico('cloud_off') + '<h2 class="mt1">Halaman tidak bisa dimuat</h2><p class="muted mt1">' + W.esc(e.message) + '</p><div class="mt2"><button class="btn" data-act="ulang">Coba lagi</button> <button class="btn out" data-nav="' + (staf ? 'dashboard' : 'landing') + '">Beranda</button></div></div></div>';
+  W.injectPage(staf && W.layoutStaf ? W.layoutStaf(nama, html) : html, null);
+}
+
 /** nama rute → fungsi(params) => Promise<{html, bind}> */
 W.navigateTo = function (nama, params, opsi) {
-  params = params || {};
+  params = params || {}; opsi = opsi || {};
   var r = W.rutaPublik[nama] || W.rutaStaf[nama];
   if (!r) { nama = 'landing'; r = W.rutaPublik.landing; }
   var staf = !!W.rutaStaf[nama];
   if (staf && !W.user) { W.tujuan = { nama: nama, params: params }; return W.navigateTo('login'); }
   W.stopPemindai();
   clearInterval(W.timer); W.timer = null;
-  W.rute = nama; W.params = params;
+  W.rute = nama; W.params = params; W.kotor = false;
+  var kunci = kunciHalaman(nama, params);
+  W.kunciH = kunci;
+  var ep = W.epoch;
+  var simpan = SWR_RUTE[nama] ? function (h) { if (ep === W.epoch) W.cacheH[kunci] = { html: h.html, bind: h.bind, t: Date.now() }; } : function () {};
+  var hit = SWR_RUTE[nama] && !opsi.tanpaSkeleton ? W.cacheH[kunci] : null;
+
+  if (hit) {
+    // TAMPIL SEKETIKA dari cache, lalu ambil data terbaru di latar belakang
+    W.injectPage(hit.html, hit.bind);
+    return Promise.resolve().then(function () { return r(params); }).then(function (h) {
+      simpan(h);
+      if (W.rute !== nama || W.kunciH !== kunci || h.html === hit.html) return;
+      if (W.kotor || W.$('#modal-root .overlay')) return;   // pengguna sedang berinteraksi: jangan ganggu
+      var y = window.pageYOffset;
+      W.injectPage(h.html, h.bind, true);
+      try { window.scrollTo(0, y); } catch (e) {}
+    }).catch(function () { /* tampilan cache tetap dipakai */ });
+  }
+
   var c = W.$('#app-container');
-  if (!(opsi && opsi.tanpaSkeleton)) c.innerHTML = staf && W.layoutStaf ? W.layoutStaf(nama, '<div class="skeleton" style="height:120px"></div><div class="skeleton mt2" style="height:260px"></div>') : W.skeleton();
+  if (!opsi.tanpaSkeleton) c.innerHTML = staf && W.layoutStaf ? W.layoutStaf(nama, '<div class="skeleton" style="height:120px"></div><div class="skeleton mt2" style="height:260px"></div>') : W.skeleton();
   return Promise.resolve().then(function () { return r(params); }).then(function (hasil) {
+    simpan(hasil);
     if (W.rute !== nama) return;       // pengguna sudah pindah halaman
     W.injectPage(hasil.html, hasil.bind);
   }).catch(function (e) {
     if (W.rute !== nama) return;
-    var html = '<div class="' + (staf ? '' : 'pub') + '"><div class="card center mt3">' + W.ico('cloud_off') + '<h2 class="mt1">Halaman tidak bisa dimuat</h2><p class="muted mt1">' + W.esc(e.message) + '</p><div class="mt2"><button class="btn" data-act="ulang">Coba lagi</button> <button class="btn out" data-nav="' + (staf ? 'dashboard' : 'landing') + '">Beranda</button></div></div></div>';
-    W.injectPage(staf && W.layoutStaf ? W.layoutStaf(nama, html) : html, null);
+    galatHalaman(nama, staf, e);
   });
 };
 
+/** Hangatkan cache sebuah halaman tanpa menampilkannya (dipanggil saat hover/sentuh menu & setelah login). */
+var sedangPrefetch = {};
+W.prefetch = function (nama, params) {
+  params = params || {};
+  var r = W.rutaPublik[nama] || W.rutaStaf[nama];
+  if (!r || !SWR_RUTE[nama]) return Promise.resolve();
+  if (W.rutaStaf[nama] && !W.user) return Promise.resolve();
+  var kunci = kunciHalaman(nama, params);
+  if (W.cacheH[kunci] || sedangPrefetch[kunci]) return Promise.resolve();
+  sedangPrefetch[kunci] = 1;
+  var ep = W.epoch;
+  return Promise.resolve().then(function () { return r(params); }).then(function (h) {
+    if (ep === W.epoch && h && h.html) W.cacheH[kunci] = { html: h.html, bind: h.bind, t: Date.now() };
+  }).catch(function () {}).then(function () { delete sedangPrefetch[kunci]; });
+};
+/** Setelah login: hangatkan halaman utama satu per satu saat browser menganggur. */
+W.prefetchAwal = function () {
+  var daftar = ['peserta', 'riwayat', 'laporan', 'sertifikat'];
+  if (W.user && W.user.peran === 'Admin') daftar = ['peserta', 'seminar', 'riwayat', 'laporan', 'sertifikat', 'pengguna'];
+  var i = 0;
+  (function lanjut() {
+    if (!W.user || i >= daftar.length) return;
+    if (document.hidden || W.rute === 'pindai') { setTimeout(lanjut, 4000); return; }
+    W.prefetch(daftar[i++]).then(function () { setTimeout(lanjut, 300); });
+  })();
+};
+
 W.sesiHabis = function () {
-  W.user = null; W.sesi = null;
+  W.user = null; W.sesi = null; W.cacheH = {}; W.epoch++;
   try { sessionStorage.removeItem('sesi'); } catch (e) {}
   W.toast('Sesi berakhir. Silakan masuk kembali.', 'bad');
   W.navigateTo('login');
@@ -284,6 +351,23 @@ document.addEventListener('click', function (e) {
   if (a && W.ACT[a.dataset.act]) { e.preventDefault(); W.ACT[a.dataset.act](a, e); }
 });
 W.ACT.ulang = function () { W.navigateTo(W.rute, W.params); };
+(function () {
+  function dariNav(e) {
+    var n = e.target && e.target.closest ? e.target.closest('[data-nav]') : null;
+    if (!n) return;
+    var p = {}; try { p = n.dataset.p ? JSON.parse(n.dataset.p) : {}; } catch (x) {}
+    W.prefetch(n.dataset.nav, p);
+  }
+  document.addEventListener('mouseover', dariNav, { passive: true });
+  document.addEventListener('touchstart', dariNav, { passive: true });
+  document.addEventListener('focusin', dariNav);
+  // tandai bila pengguna sudah berinteraksi → pembaruan diam-diam tidak menimpa tampilan
+  ['input', 'change', 'click', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) { if (e.target && e.target.closest && e.target.closest('#app-container')) W.kotor = true; }, true);
+  });
+  // hangatkan koneksi/instance GAS begitu halaman dibuka (kurangi cold start)
+  try { if (window.APP_CONFIG && APP_CONFIG.GAS_URL) fetch(APP_CONFIG.GAS_URL, { mode: 'no-cors', cache: 'no-store' }).catch(function () {}); } catch (e) {}
+})();
 
 /* ============================================================
  *  HALAMAN PUBLIK
@@ -302,8 +386,15 @@ function posterHtml(s) {
 }
 
 W.muatInfoPublik = function (seminarId) {
+  // halaman Daftar dibuat dari data daftar seminar yang baru saja dimuat di Beranda (tanpa panggilan server)
+  var L = W.infoLanding;
+  if (seminarId && L && Date.now() - L.t < 120000) {
+    var s = (L.r.daftar || []).filter(function (x) { return x.id === seminarId; })[0];
+    if (s) return Promise.resolve({ ok: true, penyelenggara: L.r.penyelenggara, logoUrl: L.r.logoUrl, seminar: s });
+  }
   return W.rpc('apiInfoPublik', [seminarId || ''], { ulang: true }).then(function (r) {
     W.penyelenggara = r.penyelenggara || W.penyelenggara; W.logoUrl = r.logoUrl || '';
+    if (!seminarId && r.daftar) W.infoLanding = { t: Date.now(), r: r };
     return r;
   });
 };
@@ -529,7 +620,7 @@ W.rutaPublik.login = function () {
           return W.rpc('apiLogin', [W.$('#l-email').value, W.$('#l-sandi').value]).then(function (r) {
             W.sesi = r.sesi; W.user = r.user;
             try { sessionStorage.setItem('sesi', r.sesi); } catch (x) {}
-            return W.setelahLogin();
+            return W.setelahLogin(false, r);
           }).catch(function (e2) { err.innerHTML = W.ico('error') + '<span>' + W.esc(e2.message) + '</span>'; err.classList.remove('hidden'); });
         });
       });
@@ -551,7 +642,7 @@ W.mulai = function () {
   if (pulih) {
     W.skeletonAwal = true;
     W.$('#app-container').innerHTML = W.skeleton();
-    W.rpc('apiPulihSesi', [pulih]).then(function (r) { W.sesi = pulih; W.user = r.user; return W.setelahLogin(true); })
+    W.rpc('apiPulihSesi', [pulih]).then(function (r) { W.sesi = pulih; W.user = r.user; return W.setelahLogin(true, r); })
       .catch(function () { try { sessionStorage.removeItem('sesi'); } catch (e) {} W.navigateTo('landing'); });
     return;
   }

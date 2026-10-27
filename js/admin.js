@@ -48,8 +48,7 @@
     if (p) p.addEventListener('change', function () { W.semId = p.value; try { sessionStorage.setItem('semId', W.semId); } catch (e) {} W.navigateTo(W.rute, W.params); });
   }
 
-  function muatSemList() {
-    return rpc('apiDaftarSeminar', [W.sesi], { ulang: true }).then(function (r) {
+  function terapkanSemList(r) {
       W.semList = r.seminar.filter(function (s) { return s.status !== 'Diarsip'; });
       W.semSemua = r.seminar; W.linkDasar = location.origin + location.pathname.replace(/index\.html$/, '');
       var baru = W.semList.filter(function (s) { return s.id === W.semId; })[0];
@@ -59,7 +58,9 @@
         var jalan = urut.filter(function (s) { return s.status === 'Dibuka' || s.status === 'Ditutup'; })[0];
         W.semId = (jalan || urut[0]).id;
       } else if (!baru) W.semId = '';
-    });
+  }
+  function muatSemList() {
+    return rpc('apiDaftarSeminar', [W.sesi], { ulang: true }).then(terapkanSemList);
   }
 
   /** Bungkus halaman staf: pastikan daftar seminar ada, lalu render dalam kerangka. */
@@ -78,19 +79,24 @@
     };
   }
 
-  W.setelahLogin = function (pulih) {
+  W.setelahLogin = function (pulih, data) {
     try { W.semId = sessionStorage.getItem('semId') || ''; } catch (e) {}
     if (admin()) {
-      // simpan alamat frontend ini agar tautan di email peserta mengarah ke sini (sekali, bila belum ada/berbeda)
+      // simpan alamat frontend ini agar tautan di email peserta mengarah ke sini (cukup sekali per alamat; ingat di browser)
       var basis = location.origin + location.pathname.replace(/index\.html$/, '');
-      if (/^https:/.test(basis)) rpc('apiPengaturan', [W.sesi]).then(function (r) { if (r.pengaturan.urlFrontend !== basis) return rpc('apiSimpanPengaturan', [W.sesi, { urlFrontend: basis }]); }).catch(function () {});
+      var sudah = ''; try { sudah = localStorage.getItem('urlFrontendOk') || ''; } catch (e) {}
+      if (/^https:/.test(basis) && sudah !== basis) setTimeout(function () {
+        rpc('apiPengaturan', [W.sesi]).then(function (r) { return r.pengaturan.urlFrontend === basis ? true : rpc('apiSimpanPengaturan', [W.sesi, { urlFrontend: basis }]).then(function () { return true; }); })
+          .then(function () { try { localStorage.setItem('urlFrontendOk', basis); } catch (e) {} }).catch(function () {});
+      }, 3000);
     }
-    return muatSemList().then(function () {
+    var siap = data && data.seminar ? Promise.resolve(terapkanSemList(data)) : muatSemList();   // sudah dibawa oleh respons login → 0 panggilan tambahan
+    return siap.then(function () {
       W.semMuat = true;
       var t = W.tujuan; W.tujuan = null;
       if (W.user.wajibGanti) { W.toast('Silakan ganti kata sandi sementara Anda.', 'ok'); return W.navigateTo('akun'); }
-      if (!pulih && t) return W.navigateTo(t.nama, t.params);
-      return W.navigateTo('dashboard');
+      var tuju = (!pulih && t) ? W.navigateTo(t.nama, t.params) : W.navigateTo('dashboard');
+      return tuju.then(function () { setTimeout(W.prefetchAwal, 800); });
     });
   };
 
